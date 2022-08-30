@@ -1,4 +1,4 @@
-# Copyright 2020 The Kubernetes Authors.
+# Copyright 2022 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,7 +13,6 @@
 # limitations under the License.
 #
 
-
 SHELL := /bin/bash
 GOOS ?= $(shell go env GOOS)
 GOARCH ?= $(shell go env GOARCH)
@@ -26,29 +25,83 @@ OUTPUT ?= $(shell pwd)/_output
 INSTALL_PATH ?= $(OUTPUT)/bin
 LDFLAGS ?= -w -s -X k8s.io/component-base/version.gitVersion=$(VERSION)
 
-.PHONY: aws-cloud-controller-manager
-aws-cloud-controller-manager:
-	 GO111MODULE=on CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH) GOPROXY=$(GOPROXY) go build \
-		-trimpath \
-		-ldflags="$(LDFLAGS)" \
-		-o=aws-cloud-controller-manager \
-		cmd/aws-cloud-controller-manager/main.go
+CHECKSUM_FILE ?= $(OUTPUT)/bin/cloud-provider-aws_$(VERSION)_checksums.txt
 
-.PHONY: ecr-credential-provider
-ecr-credential-provider:
-	 GO111MODULE=on CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH) GOPROXY=$(GOPROXY) go build \
-		-trimpath \
-		-ldflags="$(LDFLAGS)" \
-		-o=ecr-credential-provider \
-		cmd/ecr-credential-provider/*.go
+# Architectures for binary builds
+BIN_ARCH_LINUX ?= amd64 arm64
+BIN_ARCH_WINDOWS ?= amd64
 
-.PHONY: ecr-credential-provider.exe
-ecr-credential-provider.exe:
-	 GO111MODULE=on CGO_ENABLED=0 GOOS=windows GOPROXY=$(GOPROXY) go build \
+ALL_LINUX_ACCM_BIN_TARGETS = $(foreach arch,$(BIN_ARCH_LINUX),$(OUTPUT)/bin/aws-cloud-controller-manager_$(VERSION)_linux_$(arch))
+ALL_WINDOWS_ACCM_BIN_TARGETS = $(foreach arch,$(BIN_ARCH_WINDOWS),$(OUTPUT)/bin/aws-cloud-controller-manager_$(VERSION)_windows_$(arch).exe)
+ALL_ACCM_BIN_TARGETS = $(ALL_LINUX_ACCM_BIN_TARGETS) $(ALL_WINDOWS_ACCM_BIN_TARGETS)
+
+ALL_LINUX_ECP_BIN_TARGETS = $(foreach arch,$(BIN_ARCH_LINUX),$(OUTPUT)/bin/ecr-credential-provider_$(VERSION)_linux_$(arch))
+ALL_WINDOWS_ECP_BIN_TARGETS = $(foreach arch,$(BIN_ARCH_WINDOWS),$(OUTPUT)/bin/ecr-credential-provider_$(VERSION)_windows_$(arch).exe)
+ALL_ECP_BIN_TARGETS = $(ALL_LINUX_ECP_BIN_TARGETS) $(ALL_WINDOWS_ECP_BIN_TARGETS)
+
+ALL_BIN_TARGETS = $(ALL_ACCM_BIN_TARGETS) $(ALL_ECP_BIN_TARGETS)
+
+.PHONY: bin
+bin:
+ifeq ($(GOOS),windows)
+	$(MAKE) $(OUTPUT)/bin/aws-cloud-controller-manager.exe
+	$(MAKE) $(OUTPUT)/bin/ecr-credential-provider.exe
+else
+	$(MAKE) $(OUTPUT)/bin/aws-cloud-controller-manager
+	$(MAKE) $(OUTPUT)/bin/ecr-credential-provider
+endif
+
+# Function checksum
+# Parameters:
+# 1: Target file on which to perform checksum
+# 2: Checksum file to append the result
+# Note: the blank line at the end of the function is required.
+define checksum
+sha256sum $(1) | sed 's|./||' >> $(2)
+
+endef
+
+.PHONY: checksums
+checksums: $(CHECKSUM_FILE)
+
+$(CHECKSUM_FILE): build-all-bins
+	rm -f $(CHECKSUM_FILE)
+	@echo $(ALL_BIN_TARGETS)
+	$(foreach target,$(ALL_BIN_TARGETS),$(call checksum,$(target),$(CHECKSUM_FILE)))
+
+$(OUTPUT)/bin/%:
+ifneq ($(findstring ecr-credential-provider,$@),)
+	GO111MODULE=on CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH) GOPROXY=$(GOPROXY) go build \
 		-trimpath \
 		-ldflags="$(LDFLAGS)" \
-		-o=ecr-credential-provider.exe \
+		-o=$@ \
+		cmd/aws-cloud-controller-manager/*.go
+else
+	GO111MODULE=on CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH) GOPROXY=$(GOPROXY) go build \
+		-trimpath \
+		-ldflags="$(LDFLAGS)" \
+		-o=$@ \
 		cmd/ecr-credential-provider/*.go
+endif
+
+# Function build-bin
+# Parameters:
+# 1. Target Application
+# 2: Target OS
+# 3: Target architecture
+# 4: Target file extension
+# Note: the blank line at the end of the function is required.
+define build-bin
+$(MAKE) $(1)_$(VERSION)_$(2)_$(3)$(4) GOOS=$(2) GOARCH=$(3)
+
+endef
+
+.PHONY: build-all-bins
+build-all-bins:
+	$(foreach arch,$(BIN_ARCH_LINUX),$(call build-bin,$(OUTPUT)/bin/aws-cloud-controller-manager,linux,$(arch),))
+	$(foreach arch,$(BIN_ARCH_WINDOWS),$(call build-bin,$(OUTPUT)/bin/aws-cloud-controller-manager,windows,$(arch),.exe))
+	$(foreach arch,$(BIN_ARCH_LINUX),$(call build-bin,$(OUTPUT)/bin/ecr-credential-provider,linux,$(arch),))
+	$(foreach arch,$(BIN_ARCH_WINDOWS),$(call build-bin,$(OUTPUT)/bin/ecr-credential-provider,windows,$(arch),.exe))
 
 .PHONY: docker-build-amd64
 docker-build-amd64:
